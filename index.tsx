@@ -737,10 +737,25 @@ io.on('connection', (socket) => {
           <div className="flex-1 overflow-y-auto p-6 bg-white dark:bg-gray-800">
              {activeTab === 'share' && (
                 <div className="space-y-6 max-w-2xl">
-                  <h2 className="text-2xl font-bold">How to Share this App</h2>
+                  <h2 className="text-2xl font-bold mb-4">How to Share this App</h2>
+                  
+                  {/* WARNING BLOCK FOR SERVER.JS */}
+                  <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-100 dark:border-red-800 mb-6">
+                    <h4 className="font-bold text-red-800 dark:text-red-200 flex items-center gap-2">
+                      <AlertTriangle size={18}/> Critical Deployment Fix
+                    </h4>
+                    <p className="text-sm text-red-700 dark:text-red-300 mt-2">
+                      If you see a <b>500 Error</b> or <code>require is not defined</code> on Vercel:
+                      <br/>
+                      <span className="font-bold underline">YOU MUST DELETE <code>server.js</code> FROM YOUR FRONTEND REPOSITORY.</span>
+                      <br/>
+                      <span className="mt-1 block">Vercel is trying to run your backend file instead of your React frontend. The backend belongs on Render, not here.</span>
+                    </p>
+                  </div>
+
                   <p className="text-gray-600 dark:text-gray-400">To let your friend use this app on their phone or laptop, you need to put the <b>Frontend</b> (this screen) on the internet.</p>
 
-                  <div className="flex gap-4">
+                  <div className="flex gap-4 mt-4">
                    <div className="w-8 h-8 rounded-full bg-green-100 text-green-600 flex items-center justify-center font-bold shrink-0">1</div>
                    <div>
                      <h4 className="font-bold">Deploy Frontend to Vercel</h4>
@@ -753,7 +768,7 @@ io.on('connection', (socket) => {
                    </div>
                  </div>
 
-                 <div className="flex gap-4">
+                 <div className="flex gap-4 mt-4">
                    <div className="w-8 h-8 rounded-full bg-green-100 text-green-600 flex items-center justify-center font-bold shrink-0">2</div>
                    <div>
                      <h4 className="font-bold">Share the Link</h4>
@@ -761,7 +776,7 @@ io.on('connection', (socket) => {
                    </div>
                  </div>
 
-                 <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-100 dark:border-blue-800">
+                 <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-100 dark:border-blue-800 mt-6">
                     <h4 className="font-bold text-blue-800 dark:text-blue-200 flex items-center gap-2"><Globe size={18}/> Pre-Linked Backend</h4>
                     <p className="text-sm text-blue-700 dark:text-blue-300 mt-2">
                       The app is now <b>pre-configured</b> to connect to your Render backend automatically. Your friend does not need to enter any URL.
