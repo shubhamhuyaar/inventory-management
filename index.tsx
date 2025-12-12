@@ -93,6 +93,7 @@ class SocketManager {
   private listeners: { [key: string]: Function[] } = {};
   private realSocket: Socket | null = null;
   private connectionState: ConnectionState = 'disconnected';
+  private apiReference: any = null; // To call sync methods
   
   // Storage key for cross-tab sync in local mode
   private readonly STORAGE_KEY = 'inv_socket_emit_';
@@ -102,6 +103,8 @@ class SocketManager {
     window.addEventListener('storage', (e) => {
       if (this.connectionState !== 'connected' && e.key?.startsWith(this.STORAGE_KEY)) {
         const eventData = JSON.parse(e.newValue || '{}');
+        // Handle sync before triggering UI
+        if(this.apiReference) this.apiReference.syncRemoteEvent(eventData.event, eventData.data);
         this.triggerLocal(eventData.event, eventData.data);
       }
     });
@@ -113,6 +116,10 @@ class SocketManager {
     } else {
       this.connectionState = 'disconnected';
     }
+  }
+
+  setApi(api: any) {
+    this.apiReference = api;
   }
 
   connect(url: string) {
@@ -152,6 +159,11 @@ class SocketManager {
     // Proxy incoming server events to local listeners
     ['productChange', 'billChange', 'userChange'].forEach(ev => {
       this.realSocket?.on(ev, (data: any) => {
+        console.log(`📥 Received ${ev}`, data);
+        // CRITICAL: Update local storage with the incoming data
+        if(this.apiReference) {
+           this.apiReference.syncRemoteEvent(ev, data);
+        }
         this.triggerLocal(ev, data);
       });
     });
@@ -192,6 +204,7 @@ class SocketManager {
   // Main Emit function
   emit(event: string, data: any) {
     // Optimistic UI update (trigger local immediately)
+    // We do NOT call syncRemoteEvent here because we just performed the action locally in the API method
     this.triggerLocal(event, data);
 
     if (this.connectionState === 'connected' && this.realSocket) {
@@ -265,6 +278,65 @@ class MockBackend {
     if (!localStorage.getItem(DB_KEYS.BILLS)) this.set(DB_KEYS.BILLS, INITIAL_DATA.bills);
   }
 
+  // --- SYNC MECHANISM (Peer-to-Peer logic) ---
+  syncRemoteEvent(event: string, payload: any) {
+    if (!payload || !payload.type) return;
+
+    if (event === 'productChange') {
+      const products = this.get<Product>(DB_KEYS.PRODUCTS);
+      
+      if (payload.type === 'add' && payload.data) {
+        if (!products.find(p => p._id === payload.data._id)) {
+          products.push(payload.data);
+          this.set(DB_KEYS.PRODUCTS, products);
+        }
+      } else if (payload.type === 'delete' && payload.id) {
+        const filtered = products.filter(p => p._id !== payload.id);
+        this.set(DB_KEYS.PRODUCTS, filtered);
+      } else if (payload.type === 'update' && payload.data) {
+        const idx = products.findIndex(p => p._id === payload.data._id);
+        if (idx !== -1) {
+          products[idx] = payload.data;
+          this.set(DB_KEYS.PRODUCTS, products);
+        }
+      } else if (payload.type === 'stockUpdate' && payload.updates) {
+        payload.updates.forEach((u: any) => {
+          const p = products.find(prod => prod._id === u.id);
+          if (p) p.stock = u.stock;
+        });
+        this.set(DB_KEYS.PRODUCTS, products);
+      } else if (payload.type === 'fullSync' && payload.data) {
+         this.set(DB_KEYS.PRODUCTS, payload.data);
+      }
+    }
+
+    if (event === 'billChange') {
+      const bills = this.get<Bill>(DB_KEYS.BILLS);
+      if (payload.type === 'add' && payload.data) {
+        if (!bills.find(b => b._id === payload.data._id)) {
+           bills.unshift(payload.data);
+           this.set(DB_KEYS.BILLS, bills);
+        }
+      } else if (payload.type === 'update' && payload.data) {
+        const idx = bills.findIndex(b => b._id === payload.data._id);
+        if (idx !== -1) {
+          bills[idx] = payload.data;
+          this.set(DB_KEYS.BILLS, bills);
+        }
+      }
+    }
+    
+    if (event === 'userChange') {
+       const users = this.get<User>(DB_KEYS.USERS);
+       if(payload.type === 'add' && payload.data) {
+          if(!users.find(u => u._id === payload.data._id)) {
+             users.push(payload.data);
+             this.set(DB_KEYS.USERS, users);
+          }
+       }
+    }
+  }
+
   // Auth
   async login(identifier: string): Promise<{ user: User, token: string }> {
     await this.delay(300);
@@ -283,6 +355,8 @@ class MockBackend {
     
     const newUser: User = { ...userData, _id: Math.random().toString(36).substr(2, 9), createdAt: new Date().toISOString() };
     this.set(DB_KEYS.USERS, [...users, newUser]);
+    
+    // Emit full data for sync
     socket.emit('userChange', { type: 'add', data: newUser });
     return newUser;
   }
@@ -300,6 +374,8 @@ class MockBackend {
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     };
     this.set(DB_KEYS.PRODUCTS, [...products, newProduct]);
+    
+    // Emit full data
     socket.emit('productChange', { type: 'add', data: newProduct });
     return newProduct;
   }
@@ -316,63 +392,44 @@ class MockBackend {
     let updatedCount = 0;
     
     for (const row of data) {
-      // Create a normalized object with lowercase keys to handle different header cases
-      // e.g. "Product Name" -> "product name", "Stock" -> "stock"
+      // ... (normalization logic remains same) ...
       const normalizedRow: any = {};
       Object.keys(row).forEach(key => {
         normalizedRow[key.toLowerCase().trim()] = row[key];
       });
 
-      // Flexible mapping
       const name = normalizedRow['name'] || normalizedRow['product name'] || normalizedRow['product'] || normalizedRow['item'];
       const sku = normalizedRow['sku'] || normalizedRow['code'] || normalizedRow['id'] || normalizedRow['part no'];
       const category = normalizedRow['category'] || normalizedRow['type'] || normalizedRow['group'] || 'General';
       const price = Number(normalizedRow['price'] || normalizedRow['cost'] || normalizedRow['rate'] || normalizedRow['amount'] || 0);
       const stock = Number(normalizedRow['stock'] || normalizedRow['quantity'] || normalizedRow['qty'] || normalizedRow['count'] || 0);
 
-      // Validation
       if (!name) continue; 
-      
-      // Generate SKU if missing but name exists
       const finalSku = sku ? String(sku) : `GEN-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-
       const existingIdx = products.findIndex(p => p.sku === finalSku);
       
       if (existingIdx >= 0) {
-        // Update existing product
         products[existingIdx] = { 
-          ...products[existingIdx], 
-          name: name, // Allow name update
-          stock: stock, 
-          price: price, 
-          category: category,
-          updatedAt: new Date().toISOString() 
+          ...products[existingIdx], name, stock, price, category, updatedAt: new Date().toISOString() 
         };
       } else {
-        // Create new product
         products.push({
           _id: Math.random().toString(36).substr(2, 9),
-          name, 
-          sku: finalSku, 
-          category, 
-          price, 
-          stock,
-          storeId: 's1',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
+          name, sku: finalSku, category, price, stock, storeId: 's1',
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
         });
       }
       updatedCount++;
     }
     
     this.set(DB_KEYS.PRODUCTS, products);
-    socket.emit('productChange', { type: 'bulkUpdate', count: updatedCount });
+    // Send full data update to ensure everyone has the bulk import
+    socket.emit('productChange', { type: 'fullSync', data: products });
   }
 
   // Bills
   async getBills(user: User): Promise<Bill[]> {
     const bills = this.get<Bill>(DB_KEYS.BILLS);
-    // Admin sees all, Staff sees own
     if (user.role === 'admin') return bills;
     return bills.filter(b => b.createdBy === user._id);
   }
@@ -381,6 +438,7 @@ class MockBackend {
     await this.delay(500);
     const bills = this.get<Bill>(DB_KEYS.BILLS);
     const products = this.get<Product>(DB_KEYS.PRODUCTS);
+    const updates: {id: string, stock: number}[] = [];
 
     // Deduct Stock
     billData.items.forEach(item => {
@@ -389,6 +447,7 @@ class MockBackend {
         if(products[pIdx].stock < item.quantity) throw new Error(`Insufficient stock for ${item.productName}`);
         products[pIdx].stock -= item.quantity;
         products[pIdx].updatedAt = new Date().toISOString();
+        updates.push({ id: products[pIdx]._id, stock: products[pIdx].stock });
       }
     });
 
@@ -402,7 +461,8 @@ class MockBackend {
     this.set(DB_KEYS.PRODUCTS, products);
     this.set(DB_KEYS.BILLS, [newBill, ...bills]);
     
-    socket.emit('productChange', { type: 'bulkUpdate' });
+    // Emit precise stock updates and new bill data
+    socket.emit('productChange', { type: 'stockUpdate', updates });
     socket.emit('billChange', { type: 'add', data: newBill });
     
     return newBill;
@@ -425,6 +485,8 @@ class MockBackend {
 }
 
 const api = new MockBackend();
+// Link API to SocketManager for syncing
+socket.setApi(api);
 
 // ==========================================
 // 🎨 FRONTEND COMPONENTS
@@ -675,6 +737,7 @@ io.on('connection', (socket) => {
   // Relay specific events to all other clients
   ['productChange', 'billChange', 'userChange'].forEach(event => {
     socket.on(event, (data) => {
+      // Broadcast the data payload to everyone else
       socket.broadcast.emit(event, data);
     });
   });
