@@ -9,12 +9,14 @@ import {
   Edit, Trash2, Menu, CheckSquare, Square,
   FileText, Printer, Download, Upload, Wifi, WifiOff,
   Calendar, DollarSign, User as UserIcon, Server, Globe,
-  Settings, Copy, ExternalLink, Code, Rocket
+  Settings, Copy, ExternalLink, Code, Rocket, Share2
 } from 'lucide-react';
 
 // ==========================================
 // 🛠️ MOCK BACKEND & REALTIME SIMULATION
 // ==========================================
+
+const DEFAULT_SERVER_URL = "https://inventory-management-back.onrender.com";
 
 // --- Types ---
 type UserRole = 'admin' | 'manager' | 'staff';
@@ -102,21 +104,37 @@ class SocketManager {
       }
     });
 
-    // 2. Try to connect if URL exists
-    const savedUrl = localStorage.getItem('inv_server_url');
-    if(savedUrl) this.connect(savedUrl);
+    // 2. Connect automatically to the pre-linked server
+    // We allow localStorage to override it (for dev purposes), but default to production
+    const targetUrl = localStorage.getItem('inv_server_url') || DEFAULT_SERVER_URL;
+    this.connect(targetUrl);
   }
 
   connect(url: string) {
     if(this.realSocket) this.realSocket.disconnect();
     
-    this.realSocket = io(url);
+    // If using the default URL, ensure we don't save it as an override to keep things clean
+    if (url !== DEFAULT_SERVER_URL) {
+      localStorage.setItem('inv_server_url', url);
+    }
+
+    console.log(`🔌 Connecting to: ${url}`);
+    
+    this.realSocket = io(url, {
+      transports: ['websocket', 'polling'], // improved compatibility
+      reconnectionAttempts: 5
+    });
     
     this.realSocket.on('connect', () => {
       console.log('✅ Connected to Real Server');
       this.isConnected = true;
-      localStorage.setItem('inv_server_url', url); // Persist
       this.triggerLocal('connectionChange', true);
+    });
+
+    this.realSocket.on('connect_error', (err) => {
+      console.error('Connection Error:', err);
+      this.isConnected = false;
+      this.triggerLocal('connectionChange', false);
     });
 
     this.realSocket.on('disconnect', () => {
@@ -620,14 +638,10 @@ const ProductList = () => {
 // --- Deployment Module ---
 
 const DeployModal = ({ onClose }: { onClose: () => void }) => {
-  const [activeTab, setActiveTab] = useState<'files' | 'guide' | 'connect'>('guide');
-  const [serverUrl, setServerUrl] = useState('');
+  const [activeTab, setActiveTab] = useState<'files' | 'guide' | 'share' | 'connect'>('share');
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
   const [connectionStatus, setConnectionStatus] = useState<string>('');
   const REPO_URL = "https://github.com/shubhamhuyaar/inventory-management";
-
-  useEffect(() => {
-    setServerUrl(localStorage.getItem('inv_server_url') || '');
-  }, []);
 
   const SERVER_CODE = `const express = require('express');
 const { Server } = require('socket.io');
@@ -688,40 +702,82 @@ io.on('connection', (socket) => {
 
   const handleDisconnect = () => {
     socket.disconnect();
-    setServerUrl('');
-    setConnectionStatus('Disconnected');
+    setServerUrl(DEFAULT_SERVER_URL);
+    setConnectionStatus('Reset to Default');
+    setTimeout(() => socket.connect(DEFAULT_SERVER_URL), 500);
   };
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[60]">
-      <Card className="w-full max-w-4xl h-[85vh] flex flex-col p-0 overflow-hidden">
+      <Card className="w-full max-w-5xl h-[85vh] flex flex-col p-0 overflow-hidden">
         {/* Header */}
         <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-800">
-          <h3 className="text-xl font-bold flex items-center gap-2"><Rocket className="text-indigo-600"/> Deploy & Connect</h3>
+          <h3 className="text-xl font-bold flex items-center gap-2"><Rocket className="text-indigo-600"/> Deployment Center</h3>
           <button onClick={onClose}><X size={24}/></button>
         </div>
         
         <div className="flex flex-1 overflow-hidden">
           {/* Sidebar */}
-          <div className="w-48 bg-gray-100 dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 p-2 space-y-1">
-             <button onClick={() => setActiveTab('files')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-2 ${activeTab === 'files' ? 'bg-white dark:bg-gray-800 shadow font-bold text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-white/50'}`}>
-               <Code size={18}/> 1. Get Code
+          <div className="w-56 bg-gray-100 dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 p-2 space-y-1">
+             <button onClick={() => setActiveTab('share')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-2 ${activeTab === 'share' ? 'bg-white dark:bg-gray-800 shadow font-bold text-green-600' : 'text-gray-600 dark:text-gray-400 hover:bg-white/50'}`}>
+               <Share2 size={18}/> 1. Share App (Frontend)
              </button>
              <button onClick={() => setActiveTab('guide')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-2 ${activeTab === 'guide' ? 'bg-white dark:bg-gray-800 shadow font-bold text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-white/50'}`}>
-               <ExternalLink size={18}/> 2. Deploy
+               <ExternalLink size={18}/> 2. Deploy Backend
+             </button>
+             <button onClick={() => setActiveTab('files')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-2 ${activeTab === 'files' ? 'bg-white dark:bg-gray-800 shadow font-bold text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-white/50'}`}>
+               <Code size={18}/> 3. Backend Code
              </button>
              <button onClick={() => setActiveTab('connect')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-2 ${activeTab === 'connect' ? 'bg-white dark:bg-gray-800 shadow font-bold text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-white/50'}`}>
-               <Globe size={18}/> 3. Connect
+               <Globe size={18}/> 4. Connection Info
              </button>
           </div>
 
           {/* Content */}
           <div className="flex-1 overflow-y-auto p-6 bg-white dark:bg-gray-800">
+             {activeTab === 'share' && (
+                <div className="space-y-6 max-w-2xl">
+                  <h2 className="text-2xl font-bold">How to Share this App</h2>
+                  <p className="text-gray-600 dark:text-gray-400">To let your friend use this app on their phone or laptop, you need to put the <b>Frontend</b> (this screen) on the internet.</p>
+
+                  <div className="flex gap-4">
+                   <div className="w-8 h-8 rounded-full bg-green-100 text-green-600 flex items-center justify-center font-bold shrink-0">1</div>
+                   <div>
+                     <h4 className="font-bold">Deploy Frontend to Vercel</h4>
+                     <ol className="text-sm text-gray-500 list-decimal ml-4 space-y-1">
+                       <li>Push your <b>Root Folder</b> (with <code>package.json</code>, <code>index.html</code>, etc) to GitHub.</li>
+                       <li>Go to <a href="https://vercel.com" target="_blank" className="text-blue-500 underline">Vercel.com</a> and sign up.</li>
+                       <li>Click <b>Add New Project</b> -> Import your repo <code>inventory-management</code>.</li>
+                       <li>Click <b>Deploy</b> (Vercel will auto-detect Vite).</li>
+                     </ol>
+                   </div>
+                 </div>
+
+                 <div className="flex gap-4">
+                   <div className="w-8 h-8 rounded-full bg-green-100 text-green-600 flex items-center justify-center font-bold shrink-0">2</div>
+                   <div>
+                     <h4 className="font-bold">Share the Link</h4>
+                     <p className="text-sm text-gray-500">Vercel will give you a domain like <code>inventory-app.vercel.app</code>. Send this link to your friend!</p>
+                   </div>
+                 </div>
+
+                 <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-100 dark:border-blue-800">
+                    <h4 className="font-bold text-blue-800 dark:text-blue-200 flex items-center gap-2"><Globe size={18}/> Pre-Linked Backend</h4>
+                    <p className="text-sm text-blue-700 dark:text-blue-300 mt-2">
+                      The app is now <b>pre-configured</b> to connect to your Render backend automatically. Your friend does not need to enter any URL.
+                    </p>
+                 </div>
+                </div>
+             )}
+
              {activeTab === 'files' && (
                <div className="space-y-6">
                  <div>
                    <h2 className="text-2xl font-bold mb-2">Backend Files</h2>
-                   <p className="text-gray-500 mb-4">Ensure these files exist in the root of your repository: <a href={REPO_URL} target="_blank" className="text-blue-600 hover:underline font-mono">shubhamhuyaar/inventory-management</a></p>
+                   <p className="text-gray-500 mb-4">
+                     <b>STOP:</b> Do not put these in your root folder if you are deploying to Vercel. 
+                     <br/>Create a <b>NEW FOLDER</b> somewhere else on your computer for the backend to avoid conflicts.
+                   </p>
                  </div>
                  
                  <div className="space-y-2">
@@ -734,7 +790,7 @@ io.on('connection', (socket) => {
 
                  <div className="space-y-2">
                    <div className="flex justify-between items-center">
-                     <span className="font-mono font-bold text-sm bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">package.json</span>
+                     <span className="font-mono font-bold text-sm bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">package.json (Backend Only)</span>
                      <Button variant="secondary" onClick={() => copyToClipboard(PACKAGE_JSON)} className="text-xs py-1 h-auto"><Copy size={12} className="mr-1"/> Copy</Button>
                    </div>
                    <pre className="bg-gray-900 text-green-400 p-4 rounded-lg text-xs font-mono overflow-x-auto">{PACKAGE_JSON}</pre>
@@ -744,62 +800,35 @@ io.on('connection', (socket) => {
 
              {activeTab === 'guide' && (
                <div className="space-y-6 max-w-2xl">
-                 <h2 className="text-2xl font-bold">Deploying <span className="text-indigo-600 font-mono text-lg">shubhamhuyaar/inventory-management</span></h2>
+                 <h2 className="text-2xl font-bold">Deploying Backend (Render)</h2>
                  
-                 <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-4 rounded-lg">
-                    <h4 className="font-bold text-red-800 dark:text-red-200 flex items-center gap-2"><AlertTriangle size={18}/> Fix "Build Failed" Error</h4>
-                    <p className="text-sm text-red-700 dark:text-red-300 mt-1">
-                      If you see <code>npm error code ERESOLVE</code> regarding React versions, it is because you have a frontend <code>package.json</code> in your repo.
-                    </p>
-                    <p className="text-sm font-bold mt-2 text-red-800 dark:text-red-200">
-                      ACTION REQUIRED: Overwrite the <code>package.json</code> in your repo root with the one provided in the "Get Code" tab. It should ONLY contain <code>express</code>, <code>socket.io</code>, and <code>cors</code>. Do NOT include react or lucide-react.
+                 <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 p-4 rounded-lg mb-6">
+                    <h4 className="font-bold text-yellow-800 dark:text-yellow-200 flex items-center gap-2"><AlertTriangle size={18}/> Separate Repo Required</h4>
+                    <p className="text-sm text-yellow-700 dark:text-yellow-300 mt-1">
+                      For the backend, create a <b>separate GitHub repository</b> containing ONLY the <code>server.js</code> and <code>package.json</code> from Tab 3. Do not mix it with the Vercel frontend code.
                     </p>
                  </div>
 
                  <div className="flex gap-4">
                    <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold shrink-0">1</div>
                    <div>
-                     <h4 className="font-bold">Verify Repository Files</h4>
-                     <p className="text-sm text-gray-500 mb-2">Ensure you have committed and pushed the <code>server.js</code> and <code>package.json</code> files (from the 'Get Code' tab) to the root of your GitHub repository.</p>
-                     <a href={REPO_URL} target="_blank" className="text-xs bg-gray-100 px-2 py-1 rounded border hover:bg-gray-200 flex items-center gap-1 w-fit"><ExternalLink size={12}/> View Repo</a>
+                     <h4 className="font-bold">Create Service on Render</h4>
+                     <p className="text-sm text-gray-500 mb-2">
+                       1. Go to <a href="https://dashboard.render.com" target="_blank" className="text-blue-500 hover:underline font-bold">Render Dashboard</a>.<br/>
+                       2. Click the <b>New +</b> button and select <b>Web Service</b>.<br/>
+                       3. Connect your <b>Backend-Only</b> repository.
+                     </p>
                    </div>
                  </div>
 
                  <div className="flex gap-4">
                    <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold shrink-0">2</div>
                    <div>
-                     <h4 className="font-bold">Create Service on Render</h4>
-                     <p className="text-sm text-gray-500 mb-2">
-                       1. Go to <a href="https://dashboard.render.com" target="_blank" className="text-blue-500 hover:underline font-bold">Render Dashboard</a>.<br/>
-                       2. Click the <b>New +</b> button and select <b>Web Service</b>.<br/>
-                       3. Select "Build and deploy from a Git repository".<br/>
-                       4. Find <b>inventory-management</b> in the list and click <b>Connect</b>.
-                     </p>
-                   </div>
-                 </div>
-
-                 <div className="flex gap-4">
-                   <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold shrink-0">3</div>
-                   <div>
                      <h4 className="font-bold">Configure Deployment</h4>
-                     <p className="text-sm text-gray-500 mb-2">Scroll down to the settings form and ensure the following:</p>
                      <div className="bg-gray-100 dark:bg-gray-900 p-3 rounded text-sm font-mono space-y-1">
-                        <div><span className="text-gray-500">Name:</span> inventory-backend</div>
-                        <div><span className="text-gray-500">Region:</span> (Any, e.g. Oregon)</div>
-                        <div><span className="text-gray-500">Runtime:</span> Node</div>
                         <div><span className="text-gray-500">Build Command:</span> <span className="text-indigo-600">npm install</span></div>
                         <div><span className="text-gray-500">Start Command:</span> <span className="text-indigo-600">node server.js</span></div>
-                        <div><span className="text-gray-500">Plan:</span> Free</div>
                      </div>
-                     <p className="text-sm text-gray-500 mt-2">Click <b>Create Web Service</b>.</p>
-                   </div>
-                 </div>
-
-                 <div className="flex gap-4">
-                   <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold shrink-0">4</div>
-                   <div>
-                     <h4 className="font-bold">Finish & Connect</h4>
-                     <p className="text-sm text-gray-500">Wait a few minutes for the deployment to finish (it will say "Live"). Copy the URL (e.g., <code>https://inventory-backend.onrender.com</code>) and paste it in the <b>Connect</b> tab here.</p>
                    </div>
                  </div>
                </div>
@@ -808,32 +837,29 @@ io.on('connection', (socket) => {
              {activeTab === 'connect' && (
                <div className="space-y-6 max-w-xl">
                  <div>
-                   <h2 className="text-2xl font-bold mb-2">Connect to Backend</h2>
-                   <p className="text-gray-500">Paste your Render URL below to sync data across devices over the internet.</p>
+                   <h2 className="text-2xl font-bold mb-2">Cloud Connection</h2>
+                   <p className="text-gray-500">This app is automatically connected to the production server.</p>
                  </div>
                  
                  <div className="bg-gray-100 dark:bg-gray-900 p-6 rounded-xl border border-gray-200 dark:border-gray-700">
-                    <label className="block font-bold mb-2">Server URL</label>
+                    <label className="block font-bold mb-2">Server URL (Connected)</label>
                     <div className="flex gap-2">
                        <Input 
-                         placeholder="https://your-project.onrender.com" 
                          value={serverUrl} 
                          onChange={e => setServerUrl(e.target.value)}
+                         disabled={serverUrl === DEFAULT_SERVER_URL}
                        />
-                       {socket.status ? (
-                          <Button variant="danger" onClick={handleDisconnect}>Disconnect</Button>
+                       {serverUrl === DEFAULT_SERVER_URL ? (
+                          <div className="px-4 py-2 bg-green-100 text-green-700 rounded-lg font-bold flex items-center">Active</div>
                        ) : (
-                          <Button onClick={handleConnect}>Connect</Button>
+                          <Button onClick={handleConnect}>Connect Custom</Button>
                        )}
                     </div>
-                    {connectionStatus && (
-                      <div className="mt-4 text-center font-medium text-indigo-600">{connectionStatus}</div>
+                    {serverUrl !== DEFAULT_SERVER_URL && (
+                       <div className="mt-2 text-right">
+                          <button onClick={handleDisconnect} className="text-sm text-red-500 hover:underline">Reset to Default</button>
+                       </div>
                     )}
-                 </div>
-
-                 <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-200 rounded-lg text-sm">
-                   <h4 className="font-bold flex items-center gap-2"><AlertTriangle size={16}/> Note</h4>
-                   <p>Ensure your Render service is "Active". Free tier services spin down after 15 minutes of inactivity, so the first connection might take a minute.</p>
                  </div>
                </div>
              )}
@@ -1322,8 +1348,8 @@ const DashboardLayout: React.FC = () => {
            ))}
          </nav>
          <div className="absolute bottom-0 w-full p-4 border-t border-gray-200 dark:border-gray-700">
-            <button onClick={() => setIsDeployOpen(true)} className={`w-full flex items-center gap-2 mb-4 p-2 rounded-lg text-sm font-medium transition ${isConnected ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300'}`}>
-              <Server size={16}/> {isConnected ? 'Cloud Connected' : 'Connect Cloud'}
+            <button onClick={() => setIsDeployOpen(true)} className={`w-full flex items-center gap-2 mb-4 p-2 rounded-lg text-sm font-medium transition ${isConnected ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-300'}`}>
+              <Server size={16}/> {isConnected ? 'Server Connected' : 'Connecting...'}
             </button>
 
             <div className="flex items-center gap-3 mb-4">
