@@ -16,10 +16,12 @@ import {
 // 🛠️ MOCK BACKEND & REALTIME SIMULATION
 // ==========================================
 
-const DEFAULT_SERVER_URL = "https://inventory-management-back.onrender.com";
+// Empty default to ensure honest "Offline" state until configured
+const DEFAULT_SERVER_URL = ""; 
 
 // --- Types ---
 type UserRole = 'admin' | 'manager' | 'staff';
+type ConnectionState = 'connected' | 'connecting' | 'disconnected';
 
 interface User {
   _id: string;
@@ -90,7 +92,7 @@ interface Sale {
 class SocketManager {
   private listeners: { [key: string]: Function[] } = {};
   private realSocket: Socket | null = null;
-  private isConnected = false;
+  private connectionState: ConnectionState = 'disconnected';
   
   // Storage key for cross-tab sync in local mode
   private readonly STORAGE_KEY = 'inv_socket_emit_';
@@ -98,49 +100,53 @@ class SocketManager {
   constructor() {
     // 1. Listen for local storage changes (Cross-tab sync)
     window.addEventListener('storage', (e) => {
-      if (!this.isConnected && e.key?.startsWith(this.STORAGE_KEY)) {
+      if (this.connectionState !== 'connected' && e.key?.startsWith(this.STORAGE_KEY)) {
         const eventData = JSON.parse(e.newValue || '{}');
         this.triggerLocal(eventData.event, eventData.data);
       }
     });
 
-    // 2. Connect automatically to the pre-linked server
-    // We allow localStorage to override it (for dev purposes), but default to production
+    // 2. Connect automatically if URL exists
     const targetUrl = localStorage.getItem('inv_server_url') || DEFAULT_SERVER_URL;
-    this.connect(targetUrl);
+    if (targetUrl) {
+      this.connect(targetUrl);
+    } else {
+      this.connectionState = 'disconnected';
+    }
   }
 
   connect(url: string) {
-    if(this.realSocket) this.realSocket.disconnect();
+    if (!url) return;
     
-    // If using the default URL, ensure we don't save it as an override to keep things clean
-    if (url !== DEFAULT_SERVER_URL) {
-      localStorage.setItem('inv_server_url', url);
+    if(this.realSocket) {
+      this.realSocket.disconnect();
+      this.realSocket = null;
     }
+    
+    localStorage.setItem('inv_server_url', url);
 
     console.log(`🔌 Connecting to: ${url}`);
+    this.updateState('connecting');
     
     this.realSocket = io(url, {
-      transports: ['websocket', 'polling'], // improved compatibility
-      reconnectionAttempts: 5
+      transports: ['websocket', 'polling'], 
+      reconnectionAttempts: 3,
+      timeout: 5000
     });
     
     this.realSocket.on('connect', () => {
       console.log('✅ Connected to Real Server');
-      this.isConnected = true;
-      this.triggerLocal('connectionChange', true);
+      this.updateState('connected');
     });
 
     this.realSocket.on('connect_error', (err) => {
-      console.error('Connection Error:', err);
-      this.isConnected = false;
-      this.triggerLocal('connectionChange', false);
+      console.warn('Connection Error (Using Local Mode):', err.message);
+      this.updateState('disconnected');
     });
 
     this.realSocket.on('disconnect', () => {
       console.log('❌ Disconnected from Real Server');
-      this.isConnected = false;
-      this.triggerLocal('connectionChange', false);
+      this.updateState('disconnected');
     });
 
     // Proxy incoming server events to local listeners
@@ -156,9 +162,8 @@ class SocketManager {
       this.realSocket.disconnect();
       this.realSocket = null;
     }
-    this.isConnected = false;
     localStorage.removeItem('inv_server_url');
-    this.triggerLocal('connectionChange', false);
+    this.updateState('disconnected');
   }
 
   // Register listener
@@ -179,12 +184,17 @@ class SocketManager {
     }
   }
 
+  private updateState(newState: ConnectionState) {
+    this.connectionState = newState;
+    this.triggerLocal('connectionChange', newState);
+  }
+
   // Main Emit function
   emit(event: string, data: any) {
     // Optimistic UI update (trigger local immediately)
     this.triggerLocal(event, data);
 
-    if (this.isConnected && this.realSocket) {
+    if (this.connectionState === 'connected' && this.realSocket) {
       // Send to Cloud Server
       this.realSocket.emit(event, data);
     } else {
@@ -193,7 +203,7 @@ class SocketManager {
     }
   }
   
-  get status() { return this.isConnected; }
+  get status() { return this.connectionState; }
 }
 
 const socket = new SocketManager();
@@ -639,7 +649,7 @@ const ProductList = () => {
 
 const DeployModal = ({ onClose }: { onClose: () => void }) => {
   const [activeTab, setActiveTab] = useState<'files' | 'guide' | 'share' | 'connect'>('share');
-  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
+  const [serverUrl, setServerUrl] = useState(localStorage.getItem('inv_server_url') || '');
   const [connectionStatus, setConnectionStatus] = useState<string>('');
   const REPO_URL = "https://github.com/shubhamhuyaar/inventory-management";
 
@@ -695,16 +705,15 @@ io.on('connection', (socket) => {
     socket.connect(serverUrl);
     setConnectionStatus('Connecting...');
     setTimeout(() => {
-       if(socket.status) setConnectionStatus('✅ Connected successfully!');
+       if(socket.status === 'connected') setConnectionStatus('✅ Connected successfully!');
        else setConnectionStatus('❌ Failed to connect. Check URL.');
-    }, 2000);
+    }, 3000);
   };
 
   const handleDisconnect = () => {
     socket.disconnect();
-    setServerUrl(DEFAULT_SERVER_URL);
-    setConnectionStatus('Reset to Default');
-    setTimeout(() => socket.connect(DEFAULT_SERVER_URL), 500);
+    setServerUrl('');
+    setConnectionStatus('Disconnected. Operating in Offline Mode.');
   };
 
   return (
@@ -780,13 +789,6 @@ io.on('connection', (socket) => {
                      <p className="text-sm text-gray-500">Vercel will give you a domain like <code>inventory-app.vercel.app</code>. Send this link to your friend!</p>
                    </div>
                  </div>
-
-                 <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-100 dark:border-blue-800 mt-6">
-                    <h4 className="font-bold text-blue-800 dark:text-blue-200 flex items-center gap-2"><Globe size={18}/> Pre-Linked Backend</h4>
-                    <p className="text-sm text-blue-700 dark:text-blue-300 mt-2">
-                      The app is now <b>pre-configured</b> to connect to your Render backend automatically. Your friend does not need to enter any URL.
-                    </p>
-                 </div>
                 </div>
              )}
 
@@ -858,26 +860,30 @@ io.on('connection', (socket) => {
                <div className="space-y-6 max-w-xl">
                  <div>
                    <h2 className="text-2xl font-bold mb-2">Cloud Connection</h2>
-                   <p className="text-gray-500">This app is automatically connected to the production server.</p>
+                   <p className="text-gray-500">Connect this frontend to your deployed backend (e.g., Render URL).</p>
                  </div>
                  
                  <div className="bg-gray-100 dark:bg-gray-900 p-6 rounded-xl border border-gray-200 dark:border-gray-700">
-                    <label className="block font-bold mb-2">Server URL (Connected)</label>
+                    <label className="block font-bold mb-2">Target Server URL</label>
                     <div className="flex gap-2">
                        <Input 
                          value={serverUrl} 
+                         placeholder="https://your-backend.onrender.com"
                          onChange={e => setServerUrl(e.target.value)}
-                         disabled={serverUrl === DEFAULT_SERVER_URL}
                        />
-                       {serverUrl === DEFAULT_SERVER_URL ? (
-                          <div className="px-4 py-2 bg-green-100 text-green-700 rounded-lg font-bold flex items-center">Active</div>
-                       ) : (
-                          <Button onClick={handleConnect}>Connect Custom</Button>
-                       )}
+                       <Button onClick={handleConnect} disabled={!serverUrl}>Connect</Button>
                     </div>
-                    {serverUrl !== DEFAULT_SERVER_URL && (
+                    {socket.status === 'connected' && (
+                       <div className="mt-3 px-4 py-2 bg-green-100 text-green-700 rounded-lg font-bold flex items-center justify-center">
+                          ✅ Connected Successfully
+                       </div>
+                    )}
+                    {connectionStatus && socket.status !== 'connected' && (
+                       <div className="mt-2 text-sm font-bold text-gray-600">{connectionStatus}</div>
+                    )}
+                    {serverUrl && (
                        <div className="mt-2 text-right">
-                          <button onClick={handleDisconnect} className="text-sm text-red-500 hover:underline">Reset to Default</button>
+                          <button onClick={handleDisconnect} className="text-sm text-red-500 hover:underline">Disconnect & Reset</button>
                        </div>
                     )}
                  </div>
@@ -1317,10 +1323,12 @@ const DashboardLayout: React.FC = () => {
   const [isDeployOpen, setIsDeployOpen] = useState(false);
   
   // Connection State Listener
-  const [isConnected, setIsConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState<ConnectionState>(socket.status);
   useEffect(() => {
-    const handleConnection = (status: boolean) => setIsConnected(status);
+    const handleConnection = (state: ConnectionState) => setConnectionState(state);
     socket.on('connectionChange', handleConnection);
+    // Initial sync in case it changed before mount
+    setConnectionState(socket.status);
     return () => { socket.off('connectionChange', handleConnection); };
   }, []);
 
@@ -1353,6 +1361,12 @@ const DashboardLayout: React.FC = () => {
     }
   };
 
+  const getConnectionStatusText = () => {
+    if (connectionState === 'connected') return 'Server Connected';
+    if (connectionState === 'connecting') return 'Connecting...';
+    return 'Offline (Local)';
+  };
+
   return (
     <div className="flex min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors">
       <aside className={`fixed z-40 h-full w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 transition-transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
@@ -1368,8 +1382,8 @@ const DashboardLayout: React.FC = () => {
            ))}
          </nav>
          <div className="absolute bottom-0 w-full p-4 border-t border-gray-200 dark:border-gray-700">
-            <button onClick={() => setIsDeployOpen(true)} className={`w-full flex items-center gap-2 mb-4 p-2 rounded-lg text-sm font-medium transition ${isConnected ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-300'}`}>
-              <Server size={16}/> {isConnected ? 'Server Connected' : 'Connecting...'}
+            <button onClick={() => setIsDeployOpen(true)} className={`w-full flex items-center gap-2 mb-4 p-2 rounded-lg text-sm font-medium transition ${connectionState === 'connected' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : connectionState === 'connecting' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300' : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'}`}>
+              <Server size={16}/> {getConnectionStatusText()}
             </button>
 
             <div className="flex items-center gap-3 mb-4">
