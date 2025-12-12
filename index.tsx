@@ -747,7 +747,7 @@ io.on('connection', (socket) => {
                      <ol className="text-sm text-gray-500 list-decimal ml-4 space-y-1">
                        <li>Push your <b>Root Folder</b> (with <code>package.json</code>, <code>index.html</code>, etc) to GitHub.</li>
                        <li>Go to <a href="https://vercel.com" target="_blank" className="text-blue-500 underline">Vercel.com</a> and sign up.</li>
-                       <li>Click <b>Add New Project</b> -> Import your repo <code>inventory-management</code>.</li>
+                       <li>Click <b>Add New Project</b> &rarr; Import your repo <code>inventory-management</code>.</li>
                        <li>Click <b>Deploy</b> (Vercel will auto-detect Vite).</li>
                      </ol>
                    </div>
