@@ -745,11 +745,16 @@ io.on('connection', (socket) => {
                       <AlertTriangle size={18}/> Critical Deployment Fix
                     </h4>
                     <p className="text-sm text-red-700 dark:text-red-300 mt-2">
-                      If you see a <b>500 Error</b> or <code>require is not defined</code> on Vercel:
+                      If you see a <b>500 Error</b> or <code>No entrypoint found</code> on Vercel:
                       <br/>
-                      <span className="font-bold underline">YOU MUST DELETE <code>server.js</code> FROM YOUR FRONTEND REPOSITORY.</span>
+                      <span className="font-bold underline">YOU MUST UPDATE VERCEL PROJECT SETTINGS.</span>
                       <br/>
-                      <span className="mt-1 block">Vercel is trying to run your backend file instead of your React frontend. The backend belongs on Render, not here.</span>
+                      <ul className="list-disc ml-5 mt-1 space-y-1">
+                         <li>Go to Vercel Dashboard &rarr; Settings &rarr; Build & Development</li>
+                         <li>Set <b>Framework Preset</b> to <code>Vite</code>.</li>
+                         <li>Set <b>Output Directory</b> to <code>dist</code>.</li>
+                         <li>Delete <code>server.js</code> from this repo if it exists.</li>
+                      </ul>
                     </p>
                   </div>
 
