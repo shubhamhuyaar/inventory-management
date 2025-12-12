@@ -1,6 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { read, utils } from 'xlsx';
+import { io, Socket } from 'socket.io-client';
 import { 
   LayoutDashboard, Package, ShoppingCart, Users, 
   LogOut, Plus, Search, Bell, 
@@ -8,7 +9,7 @@ import {
   Edit, Trash2, Menu, CheckSquare, Square,
   FileText, Printer, Download, Upload, Wifi, WifiOff,
   Calendar, DollarSign, User as UserIcon, Server, Globe,
-  Settings, Copy
+  Settings, Copy, ExternalLink, Code, Rocket
 } from 'lucide-react';
 
 // ==========================================
@@ -83,20 +84,66 @@ interface Sale {
   date: string;
 }
 
-// --- Mock Socket.IO (Enhanced for cross-tab sync) ---
-class MockSocket {
+// --- Socket Manager (Hybrid: Local Mock + Real Internet) ---
+class SocketManager {
   private listeners: { [key: string]: Function[] } = {};
+  private realSocket: Socket | null = null;
+  private isConnected = false;
+  
+  // Storage key for cross-tab sync in local mode
+  private readonly STORAGE_KEY = 'inv_socket_emit_';
 
   constructor() {
-    // Listen for storage events to simulate cross-device/tab sync
+    // 1. Listen for local storage changes (Cross-tab sync)
     window.addEventListener('storage', (e) => {
-      if (e.key?.startsWith('inv_socket_emit_')) {
+      if (!this.isConnected && e.key?.startsWith(this.STORAGE_KEY)) {
         const eventData = JSON.parse(e.newValue || '{}');
-        this.trigger(eventData.event, eventData.data);
+        this.triggerLocal(eventData.event, eventData.data);
       }
+    });
+
+    // 2. Try to connect if URL exists
+    const savedUrl = localStorage.getItem('inv_server_url');
+    if(savedUrl) this.connect(savedUrl);
+  }
+
+  connect(url: string) {
+    if(this.realSocket) this.realSocket.disconnect();
+    
+    this.realSocket = io(url);
+    
+    this.realSocket.on('connect', () => {
+      console.log('✅ Connected to Real Server');
+      this.isConnected = true;
+      localStorage.setItem('inv_server_url', url); // Persist
+      this.triggerLocal('connectionChange', true);
+    });
+
+    this.realSocket.on('disconnect', () => {
+      console.log('❌ Disconnected from Real Server');
+      this.isConnected = false;
+      this.triggerLocal('connectionChange', false);
+    });
+
+    // Proxy incoming server events to local listeners
+    ['productChange', 'billChange', 'userChange'].forEach(ev => {
+      this.realSocket?.on(ev, (data: any) => {
+        this.triggerLocal(ev, data);
+      });
     });
   }
 
+  disconnect() {
+    if(this.realSocket) {
+      this.realSocket.disconnect();
+      this.realSocket = null;
+    }
+    this.isConnected = false;
+    localStorage.removeItem('inv_server_url');
+    this.triggerLocal('connectionChange', false);
+  }
+
+  // Register listener
   on(event: string, callback: Function) {
     if (!this.listeners[event]) this.listeners[event] = [];
     this.listeners[event].push(callback);
@@ -107,21 +154,31 @@ class MockSocket {
     this.listeners[event] = this.listeners[event].filter(cb => cb !== callback);
   }
 
-  // Internal trigger without re-emitting to storage
-  private trigger(event: string, data: any) {
+  // Internal trigger for listeners
+  private triggerLocal(event: string, data: any) {
     if (this.listeners[event]) {
       this.listeners[event].forEach(cb => cb(data));
     }
   }
 
+  // Main Emit function
   emit(event: string, data: any) {
-    this.trigger(event, data);
-    // Persist event to storage to notify other tabs
-    localStorage.setItem('inv_socket_emit_' + Date.now(), JSON.stringify({ event, data }));
+    // Optimistic UI update (trigger local immediately)
+    this.triggerLocal(event, data);
+
+    if (this.isConnected && this.realSocket) {
+      // Send to Cloud Server
+      this.realSocket.emit(event, data);
+    } else {
+      // Local Mode: Persist to storage for other tabs
+      localStorage.setItem(this.STORAGE_KEY + Date.now(), JSON.stringify({ event, data }));
+    }
   }
+  
+  get status() { return this.isConnected; }
 }
 
-const socket = new MockSocket();
+const socket = new SocketManager();
 
 // --- Mock Database ---
 const DB_KEYS = {
@@ -563,93 +620,229 @@ const ProductList = () => {
 // --- Deployment Module ---
 
 const DeployModal = ({ onClose }: { onClose: () => void }) => {
-  const SERVER_CODE = `
-const express = require('express');
-const http = require('http');
+  const [activeTab, setActiveTab] = useState<'files' | 'guide' | 'connect'>('guide');
+  const [serverUrl, setServerUrl] = useState('');
+  const [connectionStatus, setConnectionStatus] = useState<string>('');
+  const REPO_URL = "https://github.com/shubhamhuyaar/inventory-management";
+
+  useEffect(() => {
+    setServerUrl(localStorage.getItem('inv_server_url') || '');
+  }, []);
+
+  const SERVER_CODE = `const express = require('express');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
 const app = express();
 app.use(cors());
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
 
-// In-memory Database (Replace with MongoDB for persistence)
-let DATA = {
-  users: [],
-  products: [],
-  bills: []
-};
+const PORT = process.env.PORT || 3000;
+const server = app.listen(PORT, () => {
+  console.log('Server running on port ' + PORT);
+});
+
+const io = new Server(server, { 
+  cors: { origin: "*" } 
+});
 
 io.on('connection', (socket) => {
   console.log('Client connected');
   
-  // Send initial data
-  socket.emit('sync', DATA);
-
-  // Handle Updates
-  socket.on('update', ({ type, payload }) => {
-    // Basic logic to update in-memory data
-    if(type === 'product_add') DATA.products.push(payload);
-    // ... add other handlers ...
-    
-    // Broadcast to all other clients
-    socket.broadcast.emit('update', { type, payload });
+  // Relay specific events to all other clients
+  ['productChange', 'billChange', 'userChange'].forEach(event => {
+    socket.on(event, (data) => {
+      socket.broadcast.emit(event, data);
+    });
   });
-});
+});`;
 
-server.listen(3000, () => {
-  console.log('Server running on port 3000');
-});
-`;
+  const PACKAGE_JSON = `{
+  "name": "inventory-backend",
+  "version": "1.0.0",
+  "description": "Realtime backend for AutoSys",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "socket.io": "^4.7.4"
+  }
+}`;
 
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(SERVER_CODE);
-    alert("Server code copied! Paste into server.js");
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    alert("Copied to clipboard!");
+  };
+
+  const handleConnect = () => {
+    if(!serverUrl) return;
+    socket.connect(serverUrl);
+    setConnectionStatus('Connecting...');
+    setTimeout(() => {
+       if(socket.status) setConnectionStatus('✅ Connected successfully!');
+       else setConnectionStatus('❌ Failed to connect. Check URL.');
+    }, 2000);
+  };
+
+  const handleDisconnect = () => {
+    socket.disconnect();
+    setServerUrl('');
+    setConnectionStatus('Disconnected');
   };
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[60]">
-      <Card className="w-full max-w-2xl h-[80vh] flex flex-col">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-xl font-bold flex items-center gap-2"><Globe className="text-blue-500"/> Connect Over Internet</h3>
-          <button onClick={onClose}><X size={20}/></button>
+      <Card className="w-full max-w-4xl h-[85vh] flex flex-col p-0 overflow-hidden">
+        {/* Header */}
+        <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-800">
+          <h3 className="text-xl font-bold flex items-center gap-2"><Rocket className="text-indigo-600"/> Deploy & Connect</h3>
+          <button onClick={onClose}><X size={24}/></button>
         </div>
         
-        <div className="flex-1 overflow-y-auto space-y-6">
-          <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
-            <h4 className="font-bold text-blue-800 dark:text-blue-300 mb-2">How to access on multiple devices?</h4>
-            <ol className="list-decimal ml-4 space-y-2 text-sm text-gray-700 dark:text-gray-300">
-              <li>The current app uses <b>Local Mode</b> (syncs between tabs only).</li>
-              <li>To sync between <b>Laptop & Mobile</b> over internet, you need a Backend Server.</li>
-              <li>You can deploy the code below for free on <b>Render.com</b> or <b>Glitch.com</b>.</li>
-            </ol>
+        <div className="flex flex-1 overflow-hidden">
+          {/* Sidebar */}
+          <div className="w-48 bg-gray-100 dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 p-2 space-y-1">
+             <button onClick={() => setActiveTab('files')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-2 ${activeTab === 'files' ? 'bg-white dark:bg-gray-800 shadow font-bold text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-white/50'}`}>
+               <Code size={18}/> 1. Get Code
+             </button>
+             <button onClick={() => setActiveTab('guide')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-2 ${activeTab === 'guide' ? 'bg-white dark:bg-gray-800 shadow font-bold text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-white/50'}`}>
+               <ExternalLink size={18}/> 2. Deploy
+             </button>
+             <button onClick={() => setActiveTab('connect')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-2 ${activeTab === 'connect' ? 'bg-white dark:bg-gray-800 shadow font-bold text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-white/50'}`}>
+               <Globe size={18}/> 3. Connect
+             </button>
           </div>
 
-          <div>
-            <div className="flex justify-between items-center mb-2">
-               <h4 className="font-bold">server.js (Node.js Backend)</h4>
-               <Button variant="secondary" onClick={copyToClipboard} className="text-xs flex gap-1 items-center"><Copy size={12}/> Copy Code</Button>
-            </div>
-            <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg text-xs overflow-x-auto font-mono">
-              {SERVER_CODE}
-            </pre>
-          </div>
+          {/* Content */}
+          <div className="flex-1 overflow-y-auto p-6 bg-white dark:bg-gray-800">
+             {activeTab === 'files' && (
+               <div className="space-y-6">
+                 <div>
+                   <h2 className="text-2xl font-bold mb-2">Backend Files</h2>
+                   <p className="text-gray-500 mb-4">Ensure these files exist in the root of your repository: <a href={REPO_URL} target="_blank" className="text-blue-600 hover:underline font-mono">shubhamhuyaar/inventory-management</a></p>
+                 </div>
+                 
+                 <div className="space-y-2">
+                   <div className="flex justify-between items-center">
+                     <span className="font-mono font-bold text-sm bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">server.js</span>
+                     <Button variant="secondary" onClick={() => copyToClipboard(SERVER_CODE)} className="text-xs py-1 h-auto"><Copy size={12} className="mr-1"/> Copy</Button>
+                   </div>
+                   <pre className="bg-gray-900 text-green-400 p-4 rounded-lg text-xs font-mono overflow-x-auto h-48">{SERVER_CODE}</pre>
+                 </div>
 
-          <div className="space-y-2">
-             <h4 className="font-bold">Connection Settings</h4>
-             <p className="text-sm text-gray-500">Enter your deployed server URL below to connect.</p>
-             <div className="flex gap-2">
-               <Input placeholder="https://your-app.onrender.com" />
-               <Button>Connect</Button>
-             </div>
+                 <div className="space-y-2">
+                   <div className="flex justify-between items-center">
+                     <span className="font-mono font-bold text-sm bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">package.json</span>
+                     <Button variant="secondary" onClick={() => copyToClipboard(PACKAGE_JSON)} className="text-xs py-1 h-auto"><Copy size={12} className="mr-1"/> Copy</Button>
+                   </div>
+                   <pre className="bg-gray-900 text-green-400 p-4 rounded-lg text-xs font-mono overflow-x-auto">{PACKAGE_JSON}</pre>
+                 </div>
+               </div>
+             )}
+
+             {activeTab === 'guide' && (
+               <div className="space-y-6 max-w-2xl">
+                 <h2 className="text-2xl font-bold">Deploying <span className="text-indigo-600 font-mono text-lg">shubhamhuyaar/inventory-management</span></h2>
+                 
+                 <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-4 rounded-lg">
+                    <h4 className="font-bold text-red-800 dark:text-red-200 flex items-center gap-2"><AlertTriangle size={18}/> Fix "Build Failed" Error</h4>
+                    <p className="text-sm text-red-700 dark:text-red-300 mt-1">
+                      If you see <code>npm error code ERESOLVE</code> regarding React versions, it is because you have a frontend <code>package.json</code> in your repo.
+                    </p>
+                    <p className="text-sm font-bold mt-2 text-red-800 dark:text-red-200">
+                      ACTION REQUIRED: Overwrite the <code>package.json</code> in your repo root with the one provided in the "Get Code" tab. It should ONLY contain <code>express</code>, <code>socket.io</code>, and <code>cors</code>. Do NOT include react or lucide-react.
+                    </p>
+                 </div>
+
+                 <div className="flex gap-4">
+                   <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold shrink-0">1</div>
+                   <div>
+                     <h4 className="font-bold">Verify Repository Files</h4>
+                     <p className="text-sm text-gray-500 mb-2">Ensure you have committed and pushed the <code>server.js</code> and <code>package.json</code> files (from the 'Get Code' tab) to the root of your GitHub repository.</p>
+                     <a href={REPO_URL} target="_blank" className="text-xs bg-gray-100 px-2 py-1 rounded border hover:bg-gray-200 flex items-center gap-1 w-fit"><ExternalLink size={12}/> View Repo</a>
+                   </div>
+                 </div>
+
+                 <div className="flex gap-4">
+                   <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold shrink-0">2</div>
+                   <div>
+                     <h4 className="font-bold">Create Service on Render</h4>
+                     <p className="text-sm text-gray-500 mb-2">
+                       1. Go to <a href="https://dashboard.render.com" target="_blank" className="text-blue-500 hover:underline font-bold">Render Dashboard</a>.<br/>
+                       2. Click the <b>New +</b> button and select <b>Web Service</b>.<br/>
+                       3. Select "Build and deploy from a Git repository".<br/>
+                       4. Find <b>inventory-management</b> in the list and click <b>Connect</b>.
+                     </p>
+                   </div>
+                 </div>
+
+                 <div className="flex gap-4">
+                   <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold shrink-0">3</div>
+                   <div>
+                     <h4 className="font-bold">Configure Deployment</h4>
+                     <p className="text-sm text-gray-500 mb-2">Scroll down to the settings form and ensure the following:</p>
+                     <div className="bg-gray-100 dark:bg-gray-900 p-3 rounded text-sm font-mono space-y-1">
+                        <div><span className="text-gray-500">Name:</span> inventory-backend</div>
+                        <div><span className="text-gray-500">Region:</span> (Any, e.g. Oregon)</div>
+                        <div><span className="text-gray-500">Runtime:</span> Node</div>
+                        <div><span className="text-gray-500">Build Command:</span> <span className="text-indigo-600">npm install</span></div>
+                        <div><span className="text-gray-500">Start Command:</span> <span className="text-indigo-600">node server.js</span></div>
+                        <div><span className="text-gray-500">Plan:</span> Free</div>
+                     </div>
+                     <p className="text-sm text-gray-500 mt-2">Click <b>Create Web Service</b>.</p>
+                   </div>
+                 </div>
+
+                 <div className="flex gap-4">
+                   <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold shrink-0">4</div>
+                   <div>
+                     <h4 className="font-bold">Finish & Connect</h4>
+                     <p className="text-sm text-gray-500">Wait a few minutes for the deployment to finish (it will say "Live"). Copy the URL (e.g., <code>https://inventory-backend.onrender.com</code>) and paste it in the <b>Connect</b> tab here.</p>
+                   </div>
+                 </div>
+               </div>
+             )}
+
+             {activeTab === 'connect' && (
+               <div className="space-y-6 max-w-xl">
+                 <div>
+                   <h2 className="text-2xl font-bold mb-2">Connect to Backend</h2>
+                   <p className="text-gray-500">Paste your Render URL below to sync data across devices over the internet.</p>
+                 </div>
+                 
+                 <div className="bg-gray-100 dark:bg-gray-900 p-6 rounded-xl border border-gray-200 dark:border-gray-700">
+                    <label className="block font-bold mb-2">Server URL</label>
+                    <div className="flex gap-2">
+                       <Input 
+                         placeholder="https://your-project.onrender.com" 
+                         value={serverUrl} 
+                         onChange={e => setServerUrl(e.target.value)}
+                       />
+                       {socket.status ? (
+                          <Button variant="danger" onClick={handleDisconnect}>Disconnect</Button>
+                       ) : (
+                          <Button onClick={handleConnect}>Connect</Button>
+                       )}
+                    </div>
+                    {connectionStatus && (
+                      <div className="mt-4 text-center font-medium text-indigo-600">{connectionStatus}</div>
+                    )}
+                 </div>
+
+                 <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-200 rounded-lg text-sm">
+                   <h4 className="font-bold flex items-center gap-2"><AlertTriangle size={16}/> Note</h4>
+                   <p>Ensure your Render service is "Active". Free tier services spin down after 15 minutes of inactivity, so the first connection might take a minute.</p>
+                 </div>
+               </div>
+             )}
           </div>
         </div>
       </Card>
     </div>
   );
 };
-
 
 // --- Bill Generation Module ---
 
@@ -1076,6 +1269,14 @@ const DashboardLayout: React.FC = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [isDeployOpen, setIsDeployOpen] = useState(false);
+  
+  // Connection State Listener
+  const [isConnected, setIsConnected] = useState(false);
+  useEffect(() => {
+    const handleConnection = (status: boolean) => setIsConnected(status);
+    socket.on('connectionChange', handleConnection);
+    return () => { socket.off('connectionChange', handleConnection); };
+  }, []);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -1121,8 +1322,8 @@ const DashboardLayout: React.FC = () => {
            ))}
          </nav>
          <div className="absolute bottom-0 w-full p-4 border-t border-gray-200 dark:border-gray-700">
-            <button onClick={() => setIsDeployOpen(true)} className="w-full flex items-center gap-2 mb-4 p-2 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 rounded-lg text-sm font-medium hover:bg-blue-100 dark:hover:bg-blue-900/50 transition">
-              <Server size={16}/> Connect Cloud
+            <button onClick={() => setIsDeployOpen(true)} className={`w-full flex items-center gap-2 mb-4 p-2 rounded-lg text-sm font-medium transition ${isConnected ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300'}`}>
+              <Server size={16}/> {isConnected ? 'Cloud Connected' : 'Connect Cloud'}
             </button>
 
             <div className="flex items-center gap-3 mb-4">
